@@ -3,15 +3,15 @@
 *	TO DO:
 *	- Make DTR pin usable in sleep, wakeup functions -> DONE
 *	- Add soft DTMF functions
-*	- Add phonecall functions
+*	- Add phone-call functions
 *	- Add keywords file
 */
 /*
 *	POWER CONSUMTION
 *	- IDLE: ~13mA
-*	- GPRS data transfering: ~110mA normal, ~115mA if AT+CIPQSEND=1 (quick send)
+*	- GPRS data transferring: ~110mA normal, ~115mA if AT+CIPQSEND=1 (quick send)
 *	- GPRS IDLE: ~15mA
-*	- SLEEP whlen GPRS is connected: ~3mA normally, some time up ~30mA
+*	- SLEEP when GPRS is connected: ~3mA normally, some time up ~30mA
 */
 
 #ifndef _SIMGPRS_h
@@ -23,10 +23,14 @@
 #include "WProgram.h"
 #endif
 
-#if defined(__AVR_ATmega1280__) || defined(__AVR_ATmega2560__)
-#define SLOW_DOWN delayMicroseconds (700)
-#else
-#define SLOW_DOWN
+#include <TimeLib.h>
+#include <MemoryFree.h>
+
+#define SIM_SERIAL_TYPE	SoftwareSerial
+#define LOG_SERIAL_TYPE HardwareSerial
+
+#if SIM_SERIAL_TYPE == SoftwareSerial
+#include <SoftwareSerial.h>
 #endif
 
 // The interval between 2 times checking for new message (ms), 0 = disable
@@ -39,21 +43,21 @@
 #define DEFAULT_TIMEOUT 3000
 // The maximum length of receive data, prevent arduino from spending too much RAM on receiving data
 #define MAX_RESPONSE_LENGTH 350
-// Baudrate of debuging's serial port
+// Baud-rate of debugging serial port
 //#define DEBUG_BAUD 115200	//Defined in  main code
-// Baudrate of SIM module's serial port
+// Baud-rate of SIM module's serial port
 #define SIM_BAUD 19200		//Slow, but safe
 // if the number of errors reaches this number, reset the SIM module
 #define MAX_ERRORS_TO_RESET 15
 // uncomment the line below to allow auto check for new message usually to make sure no message is skipped and delete it after parsing
 #define WAIT_FOR_ANY_NEW_MESSAGE
-// uncomment the line below to allow inputing commands from termial
+// uncomment the line below to allow inputing commands from terminal
 #define ALLOW_TERMINAL_INPUT
 // uncomment the line below ignore uppercase characters while comparing
 #define IGNORE_SMS_UPPERCASE
 // uncomment the line below to enable Debugging
 #define ENABLE_LOGGING
-// uncomment the line below to alow ECHO
+// uncomment the line below to allow ECHO
 #define ENABLE_ECHO
 // uncomment the line below to use DTMF
 // #define USE_DTMF //in developing
@@ -63,8 +67,10 @@
 // #define INVERT_RESET_PIN
 // uncomment the line below to invert the DTR pin active state, default is Active-LOW
 // #define INVERT_DTR_PIN
-#define DEFAULT_RESPONSE_OK F("OK")
-#define DEFAULT_RESPONSE_ERROR F("ERROR")
+
+#define FS(x) (const __FlashStringHelper*)F(x)
+#define DEFAULT_RESPONSE_OK FS("OK")
+#define DEFAULT_RESPONSE_ERROR FS("ERROR")
 
 #ifdef ENABLE_LOGGING
 #define LOG(x) _loggingPort->print(x)
@@ -115,15 +121,15 @@ enum NetworkStatus
 
 enum PowerStatus
 {
-	// Infomation about power can be found at http://www.rhydolabz.com/documents/gps_gsm/sim900_rs232_gsm_modem_opn.pdf , page 6
+	// Information about power can be found at http://www.rhydolabz.com/documents/gps_gsm/sim900_rs232_gsm_modem_opn.pdf , page 6
 	POWERD_ON, // Hardware power on, enter full function state
 	HARD_POWERD_OFF, // Hardware power off, doesn't consume any current
-	PRE_POWERD_OFF, // AT+CPOWD=1	~13mA consumed, can't use AT commands, this help the module save data before hard power off, the module automaticaly wakeup after about 30s (!)
+	PRE_POWERD_OFF, // AT+CPOWD=1	~13mA consumed, can't use AT commands, this help the module save data before hard power off, the module automatically wakeup after about 30s (!)
 	MINIMUM_FUNC, // AT+CFUN=0	~13mA consumed, disable RF, can use AT commands
 	FULL_FUNC, // AT+CFUN=1	~13mA consumed, can use everything
 	FLIGHT, // AT+CFUN=4	disable RF, can use AT commands
-	SLEEP, // AT+CSCLK=1	~3mA consumed, can display imcomming phonecall and incomming sms message indication, can't use AT commands (so cant answer the incomming call!), DTR pin required to wake up the module
-	AUTO_SLEEP // AT+CSCLK=2	~3mA consumed, automaticaly enter sleep state when no activity has been working for about 7s, auto wakeup when call any commands TWICE
+	SLEEP, // AT+CSCLK=1	~3mA consumed, can display incoming phone-call and incoming SMS message indication, can't use AT commands (so cant answer the incoming call!), DTR pin required to wake up the module
+	AUTO_SLEEP // AT+CSCLK=2	~3mA consumed, automatically enter sleep state when no activity has been working for about 7s, auto wakeup when call any commands TWICE
 };
 
 enum MicGain
@@ -149,41 +155,39 @@ enum MicGain
 struct MessageCommand
 {
 	const __FlashStringHelper * message;
-	void(*function) (String *, String *) = NULL;
+	void(*function) (String *, String *) = nullptr;
 };
 
 class SIMGPRS
 {
 protected:
-	Stream * _port;
+	SIM_SERIAL_TYPE * _port;
 
 #ifdef ENABLE_LOGGING
-	Stream * _loggingPort;
+	LOG_SERIAL_TYPE * _loggingPort;
 #endif // ENABLE_LOGGING
 
 	uint8_t _msgCmdCounter = 0;
-	MessageCommand * _msgCmdContainer = NULL;
+	MessageCommand _msgCmdContainer[1];
 	void(*_defaultMessageFunction) (String *, String *) = nullptr; // This function runs when the received SMS doesn't match any command added
 	// void(* _streamFunction)(String *, String *) = nullptr;		//This function runs when the server response to the stream
 	void(*_debugFunction)(String *) = nullptr;
-	boolean isNewMessageChecked = false;
+	void(*_incomingCallHandlerFunction)(String *, boolean) = nullptr;
+	boolean _isNewMessageChecked = false;
 	PowerStatus _POWER_STATUS;
 	NetworkStatus _NET_STATUS;
 	GprsStatus _GPRS_STATUS;
 	int8_t _POWER_PIN = -1;
 	int8_t _RESET_PIN = -1;
 	int8_t _DTR_PIN = -1;
+	int8_t _timeZone = 7;
 public:
 	uint8_t _errorCounter = 0; // Count the errors, if reaches a predefined number, reset the SIM module
 
 #ifdef ENABLE_LOGGING
-	SIMGPRS(Stream * p, Stream * dp) :_port(p), _loggingPort(dp)
-	{
-	};
+	SIMGPRS(SIM_SERIAL_TYPE * p, LOG_SERIAL_TYPE * dp) :_port(p), _loggingPort(dp) {	};
 #else
-	SIMGPRS(Stream * p) :_port(p)
-	{
-	};
+	SIMGPRS(SIM_SERIAL_TYPE * p) :_port(p) {	};
 #endif
 
 	void init();
@@ -204,22 +208,22 @@ private:
 	boolean waitForResponse_str(String command, uint8_t tries, uint32_t timeout, const __FlashStringHelper * okText, const __FlashStringHelper * errorText, String * responseText);
 	boolean waitForResponse_F(const __FlashStringHelper * command, uint8_t tries, uint32_t timeout, const __FlashStringHelper * okText, const __FlashStringHelper * errorText, String * responseText);
 public:
-	void setDebugFunction(void(*function)(String *));
-	void waitForAnything();
+	void attachDebugFunction(void(*function)(String *));
+	void run();
 	String getProviderName();
 	int8_t getSignalStrength(int8_t * percent = nullptr); // unit: %
 	int getBatteryLevel(uint8_t * percent = nullptr); // unit: mV [+percent]
-	boolean getTime(uint8_t * hour, uint8_t * minute, uint8_t * second, uint8_t * day = nullptr, uint8_t * month = nullptr, uint16_t * year = nullptr);
-	boolean setTime(uint8_t hour, uint8_t minute, uint8_t second, uint8_t day = 16, uint8_t month = 6, uint16_t year = 2017);
+	time_t getRTC_Time();
+	boolean setRTC_Time(time_t time);
 #pragma region GPRS
 	boolean synchronizeClockToNetworkTime(int8_t timezone);
-	boolean getLocation(double * latitude, double * longitude);
+	boolean getLocation(float * latitude, float * longitude);
 	boolean keepConnectionAlive();
 	boolean attachGPRS(String APN, String user, String password); // For using HTTP only, doesn't effect TCP/UDP
 	boolean connect(); // For using HTTP only, doesn't effect TCP/UDP
 	boolean disconnect(); // For using HTTP only, doesn't effect TCP/UDP
 	GprsStatus connectionStatus(); // For using HTTP only, doesn't effect TCP/UDP
-	boolean requestHTTP(RequestMethod method, String * host, String * parameters, uint16_t * resultCode, String * serviceResponse);
+	boolean requestHTTP(RequestMethod method, String * host, String * parameters, uint16_t* resultCode = nullptr, String* serviceResponse = nullptr);
 	// boolean requestHTTP(RequestMethod method, String host, String * parameter,uint16_t * resultCode = nullptr, String * serviceResponse = nullptr);
 	// boolean stream(const __FlashStringHelper * host, String * dataToSend, void(streamFunction(String *, String *)));
 #pragma endregion
@@ -232,66 +236,72 @@ public:
 	void setDefaultMessageFunction(void(*function) (String *, String *));
 #pragma endregion
 #pragma region PHONECALL
-	boolean enableCallAutoAnswer(uint8_t numberOfRing = 1); // =0 => disable auto answer
-	boolean disableCallAutoAnswer();
+	boolean setCallAutoAnswer(uint8_t numberOfRing = 1); // =0 => disable auto answer
 	boolean answerCall();
 	boolean rejectCall();
 	boolean call(String * phoneNumber);
 	boolean setMicrophoneGainLevel(MicGain gain);
+	void attachIncomingCallHandlerFunction(void(*function)(String *, boolean));
 #pragma endregion
 #pragma region DTMF
 	// Nothing here
 #pragma endregion
-#pragma region PRIVATE
 private:
 	// Code below is low-level interface
+	void _checkCallingStatus(String * str);
 	void _clearBuffer();
 	void _pullDtr();
 	void _releaseDtr();
 	void _scanMessagesContent();
+	void _waitForNextChar();
 	PowerStatus _sleepStatus();
 	boolean _sendCmd_F(const __FlashStringHelper * cmd, uint8_t count);
 	boolean _sendCmd_strptr(String * cmd, uint8_t count);
 	boolean _sendCmd_str(String cmd, uint8_t count);
 	void _checkNewMessageNextTime();
 	boolean _waitForResponse(uint32_t * timeout, const __FlashStringHelper * okText, const __FlashStringHelper * errorText, String * responseText);
-#pragma endregion
-#pragma region TEMPLATE
+
 public:
-#ifdef ENABLE_LOGGING
-	template < typename serial, typename dbserial >
-	boolean findBaud(serial * _port, dbserial * _loggingPort)
+	boolean findBaud()
 	{
-#else
-	template < typename serial >
-	boolean findBaud(serial * _port)
-	{
-#endif
 		LOGLNF("FINDING BAUD...");
 		_pullDtr();				//in case the SIM is sleeping
 #ifdef ENABLE_LOGGING
 		//_loggingPort->begin(DEBUG_BAUD);	//called in main code
 #endif
 		delay(1000);
-		uint32_t baudArray[10] = { 38400, 115200, 9600, 57600, 19200, 14400, 4800, 2400, 1200, 28800 };
+		uint32_t baudArray[] = { 38400, 115200, 9600, 57600, 19200, 14400, 4800, 2400, 1200, 28800 };
 		char c;
 		for (uint8_t i = 0; i < sizeof(baudArray) / sizeof(baudArray[0]); i++) {
+			while (AVAILABLE) {
+				READ;
+				uint32_t u = micros();
+				while (micros() - u < 5000)
+					if (AVAILABLE)
+						continue;
+			}
 			LOGF("\nTRYING ");
 			LOG(baudArray[i]);
 			LOGF("...\nECHO:  ");
 			_port->begin(baudArray[i]);
+			delay(100);
 			SEND(F("AT+IPR="));
 			SEND(SIM_BAUD);
 			SEND(F("\r\n"));
 			delay(100);
 			String s;
+			uint32_t startTick = millis();
 			while (AVAILABLE) {
+				/*if (millis() - startTick > 2000)
+					return false;*/
 				while (AVAILABLE) {
+					/*if (millis() - startTick > 2000)
+						return false;*/
 					c = READ;
 					LOG(c);
 					if (c == '\n') LOG("       ");
-					s += c;
-					if (s.length() > 30) break;
+					if (s.length() < 30)
+						s += c;
 				}
 				if (s.indexOf(F("OK")) >= 0
 					|| s.indexOf(F("FUN")) >= 0 // +CFUN
@@ -323,9 +333,10 @@ public:
 				}
 			}
 		}
-		LOGLN("\nCAN'T SET BAUD\n");
+		LOGLNF("\nCAN'T SET BAUD\n");
 		_errorCounter++;
-		LOGLN("NUMBER OF ERRORS TO RESET: " + String(_errorCounter) + "/" + String(MAX_ERRORS_TO_RESET) + "\n");
+		LOGF("NUMBER OF ERRORS TO RESET: ");
+		LOGLN(String(_errorCounter) + "/" + String(MAX_ERRORS_TO_RESET) + "\n");
 		if (_errorCounter >= MAX_ERRORS_TO_RESET) {
 			_errorCounter = 0;
 			LOGLNF("ERR: SIM IS NOT RESPONSIBLE, TRYING HARD RESET...\n");
@@ -333,7 +344,6 @@ public:
 		}
 		return false;
 	}
-#pragma endregion
 };
 boolean _timediff(uint32_t * timer, uint32_t interval);
 #endif
